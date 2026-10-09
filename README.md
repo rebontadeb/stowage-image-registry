@@ -5,100 +5,302 @@ registry is an isolated `distribution` instance with its own users, TLS and stor
 vulnerabilities, lists their contents (SBOM), signs them, and can patch or rebase them. Runs on **podman** today
 and on **Kubernetes / OpenShift** with the same code (runtime driver interface).
 
-* [Run it on a new machine](#run-it-on-a-new-machine)
+* [Run it on a new machine](#run-it-on-a-new-machine), step by step:
+  [container install](#install-stowage-as-a-container-recommended),
+  [plain binary](#install-stowage-as-a-plain-binary-alternative),
+  [start on boot](#start-stowage-when-the-machine-boots-optional),
+  [reach it from other machines](#reach-stowage-from-other-machines-optional), [first use](#first-use)
+* [Operating it](#operating-it-data-backup-upgrade-uninstall): [back up](#back-up),
+  [move to another machine](#move-to-another-machine), [upgrade](#upgrade), [uninstall](#uninstall)
 * [Configuration reference](#configuration-reference)
-* [Operating it: data, backup, upgrade, uninstall](#operating-it-data-backup-upgrade-uninstall)
-* [Troubleshooting](#troubleshooting)
+* [Troubleshooting](#troubleshooting), including [resetting the admin password](#reset-the-admin-password-when-nobody-can-sign-in)
 * Features: [roles](#who-can-do-what), [sign-in](#sign-in), [adding images](#adding-images-from-the-ui),
   [security tools](#image-security-scans-sboms-signatures-red-hat-oval), [Kubernetes](#kubernetes--openshift)
 
 ## Run it on a new machine
+
+Follow the steps in order. Each step has one command to run and what you should see. Run everything as your normal
+(non-root) user, in the same terminal, because a few steps set shell variables that later steps use.
 
 ### What you need
 
 | Need | Details |
 |---|---|
 | OS | Linux (x86-64 or arm64). Developed and tested on Fedora with rootless podman. macOS and Windows (podman machine) are untested. |
-| podman | 5.x (developed and tested with 5.8), **rootless**, with its API socket: `systemctl --user enable --now podman.socket` |
+| podman | 5.x (developed and tested with 5.8), **rootless**, with its API socket (step 2 turns it on) |
 | git | to fetch the code |
-| Internet | to pull base images on the first build and first use (see below). Air-gapped installs need a mirror. |
-| Free ports | the UI port (default 18080 in the container recipe, 8080 for the plain binary) and **5100-5999** on the host: each tenant registry gets one |
+| Internet | to pull base images on the first build and first use (see the table at the end of this part). Air-gapped installs need a mirror. |
+| Free ports | the UI port (this guide uses 18080) and **5100-5999** on the host: each tenant registry gets one |
 | Disk | a few GB for images and tool caches, plus whatever your tenants store |
 
-You do **not** need Go or Node installed: the container recipe builds everything inside containers.
+You do **not** need Go or Node installed for the container install: it builds everything inside containers.
 
-Check podman works rootless before you start:
+### Install Stowage as a container (recommended)
+
+#### Step 1. Check that podman works without root
 
 ```sh
 podman --version
-podman info --format '{{.Host.Security.Rootless}}'      # should print true
-systemctl --user enable --now podman.socket
-ls "$XDG_RUNTIME_DIR/podman/podman.sock"                  # the socket must exist
 ```
 
-If `XDG_RUNTIME_DIR` is empty (for example over a bare `su`), log in again with a normal session, or run
-`export XDG_RUNTIME_DIR=/run/user/$(id -u)`.
+You should see `podman version 5.x`.
 
-### Option A (recommended): run Stowage as a container
+Then confirm it is rootless:
+
+```sh
+podman info --format '{{.Host.Security.Rootless}}'
+```
+
+You should see `true`. If it prints `false`, you are running as root: log in as a normal user instead.
+
+#### Step 2. Turn on podman's API socket
+
+Stowage creates tenant registries by talking to podman through this socket.
+
+```sh
+systemctl --user enable --now podman.socket
+```
+
+Then check that the socket file exists:
+
+```sh
+ls "$XDG_RUNTIME_DIR/podman/podman.sock"
+```
+
+You should see the path printed back. If you get "No such file", or `XDG_RUNTIME_DIR` is empty (for example after a
+bare `su`), log in again with a normal session, or run `export XDG_RUNTIME_DIR=/run/user/$(id -u)` and repeat this step.
+
+#### Step 3. Get the code
 
 ```sh
 git clone git@github.com:rebontadeb/stowage-image-registry.git
+```
+
+Use `https://github.com/rebontadeb/stowage-image-registry.git` instead if you have no SSH key set up. Then go into the folder:
+
+```sh
 cd stowage-image-registry
+```
 
-make podman-image                  # builds localhost/registry-ui:latest (UI + Go binary, all in containers)
+#### Step 4. Build the Stowage image
 
-mkdir -p ~/.local/share/registry-ui
+```sh
+make podman-image
+```
+
+This builds the UI and the Go program inside containers and takes a few minutes the first time (it downloads the build
+images). It ends with `Successfully tagged localhost/registry-ui:latest`.
+
+#### Step 5. Choose where Stowage keeps its data
+
+This folder holds the database, the key that encrypts signing keys, and each tenant's config. Back it up (see
+[Operating it](#operating-it-data-backup-upgrade-uninstall)).
+
+```sh
+export STOWAGE_DATA="$HOME/.local/share/registry-ui"
+```
+
+Create it:
+
+```sh
+mkdir -p "$STOWAGE_DATA"
+```
+
+#### Step 6. Choose the admin password
+
+You are prompted and nothing you type is shown. Use 12-72 characters that do not contain the user name `admin`.
+
+```sh
+read -rs -p "Admin password: " STOWAGE_ADMIN_PASSWORD; echo
+```
+
+Do not close this terminal before the next step. The password is only needed the first time Stowage starts; after
+that the admin account lives in its database. If you skip this step, Stowage generates a random password and prints it
+once in its log (step 8).
+
+#### Step 7. Start Stowage
+
+```sh
 podman run -d --name registry-ui \
   --network host --userns keep-id --user "$(id -u):$(id -g)" --security-opt label=disable \
   -v "$XDG_RUNTIME_DIR/podman/podman.sock:/run/podman/podman.sock" \
-  -v "$HOME/.local/share/registry-ui:$HOME/.local/share/registry-ui" \
-  -e REGISTRY_UI_ADMIN_PASSWORD='choose-a-long-password' \
+  -v "$STOWAGE_DATA:$STOWAGE_DATA" \
+  -e REGISTRY_UI_ADMIN_PASSWORD="$STOWAGE_ADMIN_PASSWORD" \
   localhost/registry-ui:latest -runtime podman -podman-socket /run/podman/podman.sock \
-  -listen 127.0.0.1:18080 -data-dir "$HOME/.local/share/registry-ui"
+  -listen 127.0.0.1:18080 -data-dir "$STOWAGE_DATA"
 ```
 
-Open <http://127.0.0.1:18080> and sign in as `admin` with the password you chose. Passwords are 12-72
-characters and may not contain the username. Without `REGISTRY_UI_ADMIN_PASSWORD`, a random password is generated and
-printed **once** in `podman logs registry-ui`; the account must change it at first sign-in. The variable only matters
-the first time (while there are no accounts): after that the admin account lives in the database.
+This is one command (the backslashes continue the line). It prints a long container id. What each option is for, so you
+do not drop one by accident:
 
-Why each flag matters (do not drop them):
+| Option | Why it is needed |
+|---|---|
+| `--network host` | Stowage reaches tenant registries on `127.0.0.1:<port>` |
+| `--userns keep-id --user "$(id -u):$(id -g)"` | runs as *your* uid, the only user allowed on your rootless podman socket |
+| `--security-opt label=disable` | SELinux otherwise blocks a container from using the socket (harmless where SELinux is off) |
+| `-v "$STOWAGE_DATA:$STOWAGE_DATA"` | the data folder is mounted at the **same path** inside and out, because tenant registries bind-mount their config files from it by *host* path |
 
-* `--network host`: so Stowage reaches tenant registries on `127.0.0.1:<port>`.
-* `--userns keep-id --user`: so it runs as *your* uid, the only user allowed on your rootless podman socket.
-* `--security-opt label=disable`: SELinux otherwise blocks a container from using the socket (harmless where SELinux is off).
-* The data directory is mounted at the **same path** inside and out, because tenant registries bind-mount their config
-  files from it by *host* path.
-
-Start on boot: use the Quadlet in `deploy/podman/registry-ui.container` (its header lists the install steps; the admin
-password goes in a `podman secret`). Run `loginctl enable-linger "$USER"` so it keeps running when you log out.
-
-To reach it from other machines, change `-listen` to `0.0.0.0:18080` (or a specific address), open the firewall port
-(`sudo firewall-cmd --add-port=18080/tcp --permanent && sudo firewall-cmd --reload`), and **put TLS in front of it**
-(a reverse proxy that sends `X-Forwarded-Proto: https`, with `-trust-proxy`). The sign-in cookie is only marked secure over HTTPS. Tenant registries are
-published on their own host ports (5100 and up), so open those too if clients on other machines push and pull.
-
-### Option B: build and run the binary on the host
-
-Needs Go-in-a-container (done for you by `make`) and **Node.js 22+ with npm** on the host for the UI build.
+#### Step 8. Check that it started
 
 ```sh
-git clone git@github.com:rebontadeb/stowage-image-registry.git && cd stowage-image-registry
-systemctl --user enable --now podman.socket
-make build            # builds the UI, then bin/server (Go runs in registry.access.redhat.com/hi/go)
-REGISTRY_UI_ADMIN_PASSWORD='choose-a-long-password' bin/server -listen 127.0.0.1:8080
+podman logs registry-ui
 ```
 
-`make test` runs the Go tests and `make vet` the checks. Go caches live in `~/.cache/registry-ui-go` (about 2 GB),
-outside the project on purpose.
+You should see a line ending in `msg=listening version=... addr=127.0.0.1:18080`. If you skipped step 6, the log also
+has `created first admin account ... password=...`: copy that password now, it is not shown again.
 
-### First use, in five minutes
+#### Step 9. Open it and sign in
 
-1. Sign in as `admin`. **Registries** then **New registry**: a name, a tenant name, and the first registry user.
-2. The **Overview** tab shows the address (for example `127.0.0.1:5100`) and the `podman login` / `tag` / `push` commands.
-3. Push an image: `podman login --tls-verify=false 127.0.0.1:5100`, then `podman push --tls-verify=false ...`
-   (the `--tls-verify=false` is only needed until you enable HTTPS on the **TLS** tab).
-4. **Images** shows it. **Scan image** runs the vulnerability scan; **Fix** and **Rebase** (see below) improve it.
+Open <http://127.0.0.1:18080> in a browser on the same machine and sign in as `admin` with the password from step 6.
+To reach it from another machine, see "Reach it from other machines" below.
+
+#### Step 10. Create your first registry
+
+Do this once, after your first sign-in. The first registry takes a little longer because Stowage downloads the registry
+image (about 85 MB). To skip that wait, run this before you click *New registry*:
+
+```sh
+podman pull registry.access.redhat.com/hi/distribution:latest
+```
+
+### Install Stowage as a plain binary (alternative)
+
+Use this instead of the container install if you want to run `bin/server` directly, for example while developing.
+It needs **Node.js 22 or newer with npm** on the host for the UI build (Go still runs in a container).
+
+#### Step 1. Do steps 1 to 3 of the container install
+
+That is: check podman, turn on the socket, and clone the code and `cd` into it.
+
+#### Step 2. Build
+
+```sh
+make build
+```
+
+It builds the UI, then `bin/server`. Go's caches go to `~/.cache/registry-ui-go` (about 2 GB), outside the project on purpose.
+
+#### Step 3. Choose the admin password
+
+```sh
+read -rs -p "Admin password: " STOWAGE_ADMIN_PASSWORD; echo
+```
+
+#### Step 4. Run it
+
+```sh
+REGISTRY_UI_ADMIN_PASSWORD="$STOWAGE_ADMIN_PASSWORD" bin/server -listen 127.0.0.1:8080
+```
+
+It stays in the foreground; stop it with Ctrl+C. Open <http://127.0.0.1:8080> and sign in as `admin`.
+
+`make test` runs the Go tests and `make vet` the static checks.
+
+### Start Stowage when the machine boots (optional)
+
+Use the Quadlet file `deploy/podman/registry-ui.container` instead of the `podman run` command. Run these steps after
+the image is built (container install, step 4), and remove a container started by step 7 first with
+`podman rm -f registry-ui`.
+
+#### Step 1. Store the admin password as a podman secret
+
+```sh
+printf '%s' "$STOWAGE_ADMIN_PASSWORD" | podman secret create registry-ui-admin -
+```
+
+#### Step 2. Install the unit file
+
+```sh
+install -D deploy/podman/registry-ui.container ~/.config/containers/systemd/registry-ui.container
+```
+
+#### Step 3. Tell systemd about it
+
+```sh
+systemctl --user daemon-reload
+```
+
+#### Step 4. Start it
+
+```sh
+systemctl --user start registry-ui
+```
+
+#### Step 5. Keep it running when you are logged out
+
+```sh
+loginctl enable-linger "$USER"
+```
+
+Check with `systemctl --user status registry-ui`. The file's header explains each setting.
+
+### Reach Stowage from other machines (optional)
+
+By default it only listens on the machine itself. Do these steps to let others in.
+
+#### Step 1. Put TLS in front of it
+
+Run a reverse proxy (nginx, Caddy, HAProxy, an OpenShift route, ...) with a certificate in front of Stowage. The sign-in
+cookie is only marked secure over HTTPS. The proxy must send `X-Forwarded-Proto: https`.
+
+#### Step 2. Tell Stowage to trust the proxy
+
+Add `-trust-proxy` to the end of the `podman run` command (container install, step 7) or the `Exec=` line of the
+Quadlet, then recreate the container. This makes the audit log and sign-in lock-out see real client addresses.
+
+#### Step 3. Open the firewall
+
+Open the port your proxy listens on, for example:
+
+```sh
+sudo firewall-cmd --add-port=443/tcp --permanent
+```
+
+Then apply it:
+
+```sh
+sudo firewall-cmd --reload
+```
+
+Tenant registries are published on their own host ports (5100 and up). Open those too if clients on other machines
+push and pull directly, or proxy them.
+
+### First use
+
+#### Step 1. Create a registry
+
+Sign in, open **Registries**, click **New registry**, and enter a name, a tenant name and the first registry user.
+
+#### Step 2. Read its address
+
+Open the registry. The **Overview** tab shows its address (for example `127.0.0.1:5100`) and the commands to use.
+
+#### Step 3. Log in to it
+
+```sh
+podman login --tls-verify=false 127.0.0.1:5100
+```
+
+Enter the registry user from step 1. `--tls-verify=false` is only needed until you enable HTTPS on the **TLS** tab.
+
+#### Step 4. Push an image
+
+Tag any local image for it:
+
+```sh
+podman tag myapp:latest 127.0.0.1:5100/myteam/myapp:latest
+```
+
+Then push it:
+
+```sh
+podman push --tls-verify=false 127.0.0.1:5100/myteam/myapp:latest
+```
+
+#### Step 5. See it in the UI
+
+Open the **Images** tab. Click **Scan image** to run the vulnerability scan, then **Fix** or **Rebase** as described
+in [Image security](#image-security-scans-sboms-signatures-red-hat-oval).
 
 ### Images that are pulled on first use
 
@@ -303,14 +505,63 @@ safe details (never passwords, keys or env values, only env variable *names*). F
 
 ## Kubernetes / OpenShift
 
+Run these from the repository folder, against the cluster you want (`kubectl`, or `oc` on OpenShift).
+
+#### Step 1. Build the image
+
 ```sh
-podman build -f deploy/Containerfile -t <registry>/registry-ui:latest . && podman push <registry>/registry-ui:latest
-# edit the image in deploy/k8s/registry-ui.yaml, create the registry-ui-auth secret (see the file), then:
+podman build -f deploy/Containerfile --build-arg VERSION=$(git describe --always --dirty) -t <registry>/registry-ui:latest .
+```
+
+#### Step 2. Push it where the cluster can pull it
+
+```sh
+podman push <registry>/registry-ui:latest
+```
+
+#### Step 3. Point the manifest at your image
+
+Edit `deploy/k8s/registry-ui.yaml` and set `image:` on the Deployment to the image from step 1.
+
+#### Step 4. Create the namespace
+
+The secret in the next step needs it to exist. The manifest also declares it; `kubectl apply` may print a harmless
+warning about that.
+
+```sh
+kubectl create namespace registry-ui
+```
+
+#### Step 5. Create the secret with the first admin password
+
+The password is 12-72 characters and must not contain the user name. `master-key` encrypts signing keys: keep it with your
+backups. Add `--from-literal=oidc-client-secret=...` only if you use single sign-on.
+
+```sh
+kubectl -n registry-ui create secret generic registry-ui-auth \
+  --from-literal=admin-password="$(openssl rand -base64 24)" \
+  --from-literal=master-key="$(openssl rand -base64 32)"
+```
+
+Read the generated password back with `kubectl -n registry-ui get secret registry-ui-auth -o jsonpath='{.data.admin-password}' | base64 -d`.
+
+#### Step 6. Apply the manifest
+
+```sh
 kubectl apply -f deploy/k8s/registry-ui.yaml
 ```
 
+#### Step 7. Wait for it and open it
+
+```sh
+kubectl -n registry-ui rollout status deploy/registry-ui
+```
+
+Then reach it with a Route, Ingress or `kubectl -n registry-ui port-forward deploy/registry-ui 8080:8080`.
+
 Each tenant registry becomes a Deployment, Service, PVC and Secret; `-k8s-expose=route|ingress` adds
-`<name>.<domain>`. Storage usage numbers need the optional `nodes/proxy` ClusterRole in the manifest.
+`<name>.<domain>`. Storage usage numbers need the optional `nodes/proxy` ClusterRole in the manifest. Kubernetes support
+is tested with fakes and a real image build, not yet against a live cluster.
 
 ## Configuration reference
 
@@ -338,43 +589,161 @@ Run `bin/server -h` (or `podman run --rm localhost/registry-ui:latest -h`) for t
 
 ## Operating it: data, backup, upgrade, uninstall
 
-**Where the state is.** Everything Stowage owns is in the data directory (`~/.local/share/registry-ui` in the recipes):
-`registry-ui.db` (accounts, tenants, scan results, audit log), `master.key` (encrypts signing keys; **lose it and the
-signing keys are unreadable**), per-registry config and certificates, and `scratch/` (temporary). Tenant images live
-in podman volumes named `reg-<name>-data`.
+**Where the state is.** Everything Stowage owns is in the data folder (`$STOWAGE_DATA`, `~/.local/share/registry-ui` in
+this guide): `registry-ui.db` (accounts, tenants, scan results, audit log), `master.key` (encrypts signing keys; **lose it
+and the signing keys are unreadable**), per-registry config and certificates, and `scratch/` (temporary). Tenant images
+live in podman volumes named `reg-<name>-data`.
 
-**Back up** (stop Stowage first so the database is consistent; tenant registries can keep running):
+The steps below assume the variable from the install is set. In a new terminal set it again:
+
+```sh
+export STOWAGE_DATA="$HOME/.local/share/registry-ui"
+```
+
+### Back up
+
+#### Step 1. Stop Stowage
+
+This makes the database consistent. Tenant registries keep running.
 
 ```sh
 podman stop registry-ui
-tar -C ~/.local/share -czf stowage-state-$(date +%F).tgz registry-ui
-for v in $(podman volume ls -q --filter name=reg-); do podman volume export "$v" -o "$v.tar"; done   # tenant images
+```
+
+#### Step 2. Save the data folder
+
+```sh
+tar -C "$(dirname "$STOWAGE_DATA")" -czf stowage-state-$(date +%F).tgz "$(basename "$STOWAGE_DATA")"
+```
+
+#### Step 3. Save each tenant's images
+
+Repeat for every volume in the list. First list them:
+
+```sh
+podman volume ls -q --filter name=reg-
+```
+
+Then export one (replace the name with a line from the list):
+
+```sh
+podman volume export reg-sample-data -o reg-sample-data.tar
+```
+
+#### Step 4. Start Stowage again
+
+```sh
 podman start registry-ui
 ```
 
-**Move to another machine.** Install as above, stop Stowage on both, restore the state directory to the **same path**
-on the new machine (the path appears inside tenant config), `podman volume import` the volumes, start Stowage. Tenant
-registries are recreated from the database. Host ports must still be free.
+Keep the `.tgz` and `.tar` files somewhere off this machine.
 
-**Upgrade.**
+### Move to another machine
+
+#### Step 1. Back up on the old machine
+
+Do the back-up steps above, then leave Stowage stopped on the old machine so two copies never run.
+
+#### Step 2. Install on the new machine, but do not start it
+
+Follow the container install steps 1 to 6 on the new machine. Stop before step 7.
+
+#### Step 3. Restore the data folder to the same path
+
+The path appears inside tenant config, so it must be the same. Copy the `.tgz` over, then:
 
 ```sh
-cd stowage-image-registry && git pull
-make podman-image
-podman rm -f registry-ui        # tenant registries keep running, they are separate containers
-# run the same `podman run ...` command as before
+tar -C "$(dirname "$STOWAGE_DATA")" -xzf stowage-state-YYYY-MM-DD.tgz
 ```
 
-The database upgrades itself on start. Pin a known-good image with `podman tag localhost/registry-ui:latest
-localhost/registry-ui:<date>` before upgrading so you can roll back.
+#### Step 4. Restore each tenant's volume
 
-**Uninstall.**
+For each exported file (replace the names):
+
+```sh
+podman volume create reg-sample-data
+```
+
+```sh
+podman volume import reg-sample-data reg-sample-data.tar
+```
+
+#### Step 5. Start Stowage
+
+Run container install step 7. Tenant registries are recreated from the database. Their host ports must be free on the
+new machine.
+
+### Upgrade
+
+#### Step 1. Get the new code
+
+```sh
+cd stowage-image-registry
+```
+
+```sh
+git pull
+```
+
+If git reports diverged history, run `git fetch origin && git reset --hard origin/main` instead.
+
+#### Step 2. Keep the old image so you can roll back (optional)
+
+```sh
+podman tag localhost/registry-ui:latest localhost/registry-ui:previous
+```
+
+#### Step 3. Build the new image
+
+```sh
+make podman-image
+```
+
+#### Step 4. Remove the old container
+
+Tenant registries keep running; they are separate containers.
 
 ```sh
 podman rm -f registry-ui
-podman rm -f $(podman ps -aq --filter name=reg-)            # tenant registries (their data stays in the volumes)
-podman volume rm $(podman volume ls -q --filter name=reg-)  # ONLY if you want the images gone for good
-rm -rf ~/.local/share/registry-ui
+```
+
+#### Step 5. Start it again
+
+Run the same `podman run` command as in install step 7 (the variable `STOWAGE_ADMIN_PASSWORD` is not needed again; any
+value is ignored once the admin account exists). The database upgrades itself on start.
+
+#### Step 6. Check the version
+
+Open the UI. The footer shows `Version <commit id>`, and `podman logs registry-ui` prints it at startup.
+
+To roll back: `podman rm -f registry-ui`, then run install step 7 with `localhost/registry-ui:previous` instead of `:latest`.
+
+### Uninstall
+
+#### Step 1. Remove Stowage
+
+```sh
+podman rm -f registry-ui
+```
+
+#### Step 2. Remove the tenant registries (their data stays in the volumes)
+
+```sh
+podman rm -f $(podman ps -aq --filter name=reg-)
+```
+
+#### Step 3. Delete tenant images for good (optional)
+
+Only do this if you really want the stored images gone.
+
+```sh
+podman volume rm $(podman volume ls -q --filter name=reg-)
+```
+
+#### Step 4. Delete Stowage's data
+
+```sh
+rm -rf "$STOWAGE_DATA"
 ```
 
 ## Troubleshooting
@@ -393,7 +762,37 @@ rm -rf ~/.local/share/registry-ui
 | Fix says nothing to fix, or counts do not drop | Scanners mark many advisories "not fixed". See the Fix section; the real remedy is a newer base image, rebuilt from your Dockerfile. |
 | A rebased image will not start | Rebase is not for language-runtime images (`pip install`, `npm install`). Rebuild from the Dockerfile instead. |
 | Sign-in loops over HTTPS behind a proxy | Add `-trust-proxy` and make the proxy send `X-Forwarded-Proto: https`. |
-| Forgot the admin password | Another admin can reset it under **Accounts & access**. If no admin can sign in: stop Stowage, back up the data directory, run `sqlite3 registry-ui.db 'DELETE FROM accounts;'` (this also removes every other account and its access settings, but not tenants or images), then start Stowage with `REGISTRY_UI_ADMIN_PASSWORD` set. The first admin is only created while there are no accounts. `REGISTRY_UI_ADMIN_USER` changes the user name (default `admin`). |
+| Forgot the admin password | Another admin can reset it under **Accounts & access**. If no admin can sign in, follow "Reset the admin password" below. |
+
+### Reset the admin password when nobody can sign in
+
+The first admin is only created while there are no accounts, so this removes every account (tenants and images stay).
+Other accounts and their access settings have to be created again.
+
+#### Step 1. Stop Stowage
+
+```sh
+podman stop registry-ui
+```
+
+#### Step 2. Back up the data folder
+
+```sh
+cp -a "$STOWAGE_DATA" "$STOWAGE_DATA.bak"
+```
+
+#### Step 3. Delete the accounts
+
+This needs the `sqlite3` command (`sudo dnf install sqlite` or `sudo apt install sqlite3`).
+
+```sh
+sqlite3 "$STOWAGE_DATA/registry-ui.db" 'DELETE FROM accounts;'
+```
+
+#### Step 4. Set a new password and start it
+
+Recreate the container with the new password, as in install steps 6 and 7 (remove the old container first with
+`podman rm -f registry-ui`). `REGISTRY_UI_ADMIN_USER` changes the user name (default `admin`).
 
 ## Known limits
 
