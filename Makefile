@@ -1,6 +1,7 @@
 GO_IMAGE ?= registry.access.redhat.com/hi/go:latest
 # Go build and module caches live outside the project (it may be synced, and the caches are ~2 GB).
 GO_CACHE ?= $(HOME)/.cache/registry-ui-go
+VERSION ?= $(shell git describe --always --dirty 2>/dev/null || echo dev)
 GO := podman run --rm -v $(CURDIR):/src:z -v $(GO_CACHE):/gocache:z -w /src -e GOCACHE=/gocache/go-build -e GOMODCACHE=/gocache/go-mod -e GOFLAGS=-buildvcs=false $(GO_IMAGE) go
 
 UI_SRC := $(shell find web/src web/index.html web/package.json web/vite.config.ts -type f 2>/dev/null)
@@ -16,7 +17,7 @@ vet: ui
 	$(GO) vet ./...
 build: ui
 	@mkdir -p $(GO_CACHE)
-	$(GO) build -o bin/server ./cmd/server
+	$(GO) build -ldflags "-X main.version=$(VERSION)" -o bin/server ./cmd/server
 test: ui
 	@mkdir -p $(GO_CACHE)
 	$(GO) test ./...
@@ -25,4 +26,4 @@ clean:
 
 # The manager as a container image (also what Kubernetes deploys). Runs on podman too: see README.
 podman-image:
-	podman build -f deploy/Containerfile -t localhost/registry-ui:latest .
+	podman build -f deploy/Containerfile --build-arg VERSION=$(VERSION) -t localhost/registry-ui:latest .

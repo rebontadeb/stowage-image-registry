@@ -14,6 +14,7 @@ import (
 type meResponse struct {
 	auth.Principal
 	Registries []string `json:"registries"`
+	Version    string   `json:"version"` // build version, shown in the footer
 }
 
 func (a *API) me(w http.ResponseWriter, r *http.Request) {
@@ -22,7 +23,7 @@ func (a *API) me(w http.ResponseWriter, r *http.Request) {
 	for k := range p.Registries {
 		regs = append(regs, k)
 	}
-	writeJSON(w, 200, meResponse{Principal: p, Registries: regs})
+	writeJSON(w, 200, meResponse{Principal: p, Registries: regs, Version: a.opt.Version})
 }
 
 func (a *API) authConfig(w http.ResponseWriter, _ *http.Request) {

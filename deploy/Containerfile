@@ -8,12 +8,13 @@ COPY web/ ./
 RUN npm run build
 
 FROM registry.access.redhat.com/hi/go:latest AS build
+ARG VERSION=dev
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 COPY --from=ui /app/dist web/dist
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/server ./cmd/server
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o /out/server ./cmd/server
 
 FROM registry.access.redhat.com/hi/static:latest
 COPY --from=build /out/server /server

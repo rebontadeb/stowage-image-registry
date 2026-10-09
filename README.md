@@ -130,6 +130,8 @@ cache on a machine that will go offline, `podman pull` the ones you use.
   * **Registry users**, **TLS**, **Security** (signing and trusted keys), **Configuration**, **Access** (which Stowage
     accounts may see it), and **Delete registry** (admins; type the name to confirm).
 * **Audit log**, **Accounts & access**, **Security tools** (admins).
+* A **footer** on every page: product name, the build version, and links to the documentation and source. The version
+  comes from `git describe` at build time (`make` and `make podman-image` pass it; a plain `go build` shows `dev`).
 * Light and dark themes, a collapsible navigation, and a layout for phones (see [Navigation and mobile](#navigation-and-mobile)).
 
 ## Who can do what

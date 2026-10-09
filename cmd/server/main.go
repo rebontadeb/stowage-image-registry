@@ -34,6 +34,9 @@ func csv(s string) []string {
 	return out
 }
 
+// version is set at build time: -ldflags "-X main.version=..." (see the Makefile and deploy/Containerfile).
+var version = "dev"
+
 func main() {
 	home, _ := os.UserHomeDir()
 	listen := flag.String("listen", "127.0.0.1:8080", "API and UI listen address")
@@ -178,7 +181,7 @@ func main() {
 
 	root := http.NewServeMux()
 	root.Handle("/api/", api.New(svc, api.Options{
-		Auth: authSvc, OIDC: oidc, Store: st, DisableLocalLogin: *noLocal, TrustProxy: *trustProxy, Log: log,
+		Auth: authSvc, OIDC: oidc, Store: st, DisableLocalLogin: *noLocal, TrustProxy: *trustProxy, Version: version, Log: log,
 	}))
 	root.Handle("/", web.Handler())
 	srv := &http.Server{Addr: *listen, Handler: api.Secure(root), ReadHeaderTimeout: 10 * time.Second}
@@ -191,7 +194,7 @@ func main() {
 		defer cancel()
 		_ = srv.Shutdown(sctx)
 	}()
-	log.Info("listening", "addr", *listen, "runtime", *rt, "security", *secOn, "sso", oidc != nil, "localLogin", !*noLocal)
+	log.Info("listening", "version", version, "addr", *listen, "runtime", *rt, "security", *secOn, "sso", oidc != nil, "localLogin", !*noLocal)
 	if err := srv.ListenAndServe(); err != http.ErrServerClosed {
 		log.Error("server", "err", err)
 		os.Exit(1)

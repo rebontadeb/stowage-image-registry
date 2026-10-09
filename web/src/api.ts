@@ -11,7 +11,7 @@ export interface Fleet { summary: FleetSummary; registries: FleetItem[] }
 
 export interface Me {
   id: number; username: string; displayName: string; role: Role; source: "local" | "oidc";
-  allRegistries: boolean; registries: string[]; mustChangePassword: boolean;
+  allRegistries: boolean; registries: string[]; mustChangePassword: boolean; version?: string;
 }
 export interface AuthConfig { localLogin: boolean; oidc: boolean; oidcName?: string; security?: boolean }
 export interface Account {

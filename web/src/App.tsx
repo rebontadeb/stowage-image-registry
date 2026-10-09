@@ -172,6 +172,17 @@ function Shell() {
           <button className="btn secondary sm hide-sm" onClick={() => s.logout()}>Sign out</button>
         </header>
         <main id="main" tabIndex={-1}>{page}</main>
+        <footer className="app-footer">
+          <div className="app-footer-id">
+            <span className="logo" aria-hidden="true">S</span>
+            <span><strong>Stowage</strong> <span className="muted">· Private container registries for your tenants</span></span>
+          </div>
+          <div className="app-footer-links">
+            {s.me!.version && <span title="Build version">Version <span className="mono">{s.me!.version}</span></span>}
+            <a href="https://github.com/rebontadeb/stowage-image-registry#readme" target="_blank" rel="noopener noreferrer">Documentation<span className="sr-only"> (opens in a new tab)</span></a>
+            <a href="https://github.com/rebontadeb/stowage-image-registry" target="_blank" rel="noopener noreferrer">Source<span className="sr-only"> (opens in a new tab)</span></a>
+          </div>
+        </footer>
       </div>
     </div>
   );

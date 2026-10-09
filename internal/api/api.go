@@ -20,8 +20,9 @@ type Options struct {
 	OIDC  *auth.OIDC // nil when SSO is not configured
 	Store *store.Store
 
-	DisableLocalLogin bool // SSO only
-	TrustProxy        bool // take the client address from X-Forwarded-For
+	DisableLocalLogin bool   // SSO only
+	TrustProxy        bool   // take the client address from X-Forwarded-For
+	Version           string // build version, shown to signed-in users
 	Log               *slog.Logger
 }
 

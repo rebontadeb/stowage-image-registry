@@ -378,3 +378,13 @@ details.more[open] summary { margin-bottom: 10px; }
 .grid.two.even { margin-bottom: 16px; }
 @media (max-width: 900px) { .grid.two.even { grid-template-columns: 1fr; } }
 .ok-text { color: var(--ok); font-size: 13px; } .err-text { color: var(--danger); font-size: 13px; }
+
+/* Product footer */
+.app-footer { border-top: 1px solid var(--line); background: var(--surface); padding: 14px 24px; display: flex; align-items: center; justify-content: space-between; gap: 8px 24px; flex-wrap: wrap; font-size: 13px; color: var(--muted); }
+.app-footer-id { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.app-footer-id strong { color: var(--text); }
+.app-footer .logo { color: #fff; width: 22px; height: 22px; border-radius: 6px; background: linear-gradient(135deg, #3b82f6, #1d4ed8); display: grid; place-items: center; font-size: 12px; font-weight: 700; flex: none; }
+.app-footer-links { display: flex; align-items: center; gap: 6px 18px; flex-wrap: wrap; }
+.app-footer a { color: var(--muted); text-decoration: underline; text-underline-offset: 3px; }
+.app-footer a:hover { color: var(--text); }
+@media (max-width: 600px) { .app-footer { padding: 14px 16px; } }
