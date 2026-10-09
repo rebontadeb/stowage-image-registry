@@ -7,6 +7,7 @@ import (
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/mutate"
 	"github.com/google/go-containerregistry/pkg/v1/random"
+	"github.com/google/go-containerregistry/pkg/v1/types"
 )
 
 func TestRebaseOntoSwapsBaseLayersAndKeepsTheApp(t *testing.T) {
@@ -79,5 +80,45 @@ func TestRebaseOntoByLayerCountIgnoresAMovedBaseTag(t *testing.T) {
 	}
 	if _, err := rebaseOnto(orig, nil, newBase, 3); err == nil {
 		t.Fatal("the whole image cannot be the base")
+	}
+}
+
+func TestAlignMediaTypesMakesTheManifestConsistent(t *testing.T) {
+	img, _ := random.Image(256, 3) // Docker layer types
+	app, _ := random.Layer(64, types.DockerLayer)
+	mixed, _ := mutate.Append(img, mutate.Addendum{Layer: app})
+	for _, c := range []struct {
+		manifest, config, layer types.MediaType
+	}{
+		{types.OCIManifestSchema1, types.OCIConfigJSON, types.OCILayer},
+		{types.DockerManifestSchema2, types.DockerConfigJSON, types.DockerLayer},
+	} {
+		got, err := alignMediaTypes(mixed, c.manifest, c.config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		m, err := got.Manifest()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if mt, _ := got.MediaType(); mt != c.manifest || m.Config.MediaType != c.config {
+			t.Errorf("manifest/config types = %s / %s, want %s / %s", mt, m.Config.MediaType, c.manifest, c.config)
+		}
+		for i, l := range m.Layers {
+			if l.MediaType != c.layer {
+				t.Errorf("layer %d is %s, want %s", i, l.MediaType, c.layer)
+			}
+		}
+		if len(m.Layers) != 4 {
+			t.Errorf("layers = %d, want 4", len(m.Layers))
+		}
+		a, _ := mixed.ConfigFile()
+		b, _ := got.ConfigFile()
+		if len(a.RootFS.DiffIDs) != len(b.RootFS.DiffIDs) || a.RootFS.DiffIDs[3] != b.RootFS.DiffIDs[3] {
+			t.Error("content must not change")
+		}
+		if _, err := got.Digest(); err != nil {
+			t.Errorf("image must be serialisable: %v", err)
+		}
 	}
 }

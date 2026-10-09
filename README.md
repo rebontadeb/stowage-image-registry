@@ -269,6 +269,9 @@ Limits, stated plainly:
   findings) or not at all (Alpine 3.14).
 * The machine needs internet access to the distribution's package repositories.
 * **Podman only**: the unpacked image is bind-mounted into a helper container, like the OVAL check.
+* The result keeps the original's image format (OCI or Docker) and every layer is of the matching type, so strict
+  registries such as quay.io accept it. Images fixed or rebased by Stowage before 2026-10-09 may mix the two and be
+  refused when pushed on (`unsupported MIME type for compression`): run Fix or Rebase on the original again.
 * File owners in the new layer are flattened to root (rootless users cannot read other owners); modes, including
   setuid bits, are kept. Unchanged files are not repeated in the layer.
 

@@ -127,6 +127,15 @@ func (s *Service) doRebase(ctx context.Context, a access, in RebaseInput, digest
 	if err != nil {
 		return "", err
 	}
+	// The result keeps the format of the image that was rebased, with every layer of the same family: the new
+	// base may be Docker-format while the image is OCI, and a manifest must not mix the two.
+	manifestMT, configMT, err := formatOf(orig)
+	if err != nil {
+		return "", err
+	}
+	if img, err = alignMediaTypes(img, manifestMT, configMT); err != nil {
+		return "", err
+	}
 	cfg, err := img.ConfigFile()
 	if err != nil {
 		return "", err

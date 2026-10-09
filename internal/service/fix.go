@@ -21,6 +21,7 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/mutate"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 	"github.com/google/go-containerregistry/pkg/v1/tarball"
+	"github.com/google/go-containerregistry/pkg/v1/types"
 
 	"github.com/rdeb/local-image-registry/internal/imgfs"
 	"github.com/rdeb/local-image-registry/internal/regclient"
@@ -222,15 +223,19 @@ func (s *Service) doFix(ctx context.Context, a access, repo, digest, newTag, mgr
 	if n == 0 {
 		return "", fmt.Errorf("%w: the update changed no files", ErrNothingToFix)
 	}
-	layer, err := tarball.LayerFromFile(tmp.Name())
-	if err != nil {
-		return "", err
-	}
-
 	src, err := s.sourceImage(ctx, a, repo, digest)
 	if err != nil {
 		return "", err
 	}
+	manifestMT, configMT, err := formatOf(src)
+	if err != nil {
+		return "", err
+	}
+	layer, err := tarball.LayerFromFile(tmp.Name(), tarball.WithMediaType(layerTypeFor(types.DockerLayer, manifestMT)))
+	if err != nil {
+		return "", err
+	}
+
 	img, err := mutate.Append(src, mutate.Addendum{
 		Layer:   layer,
 		History: v1.History{Created: v1.Time{Time: time.Now().UTC()}, CreatedBy: "stowage fix: " + mgr + " upgrade " + strings.Join(pkgs, " ") + map[bool]string{true: "(all packages)"}[len(pkgs) == 0], Comment: "fixed from " + digest},
@@ -248,6 +253,9 @@ func (s *Service) doFix(ctx context.Context, a access, repo, digest, newTag, mgr
 	}
 	cfg.Config.Labels["io.stowage.fixed-from"] = digest
 	if img, err = mutate.ConfigFile(img, cfg); err != nil {
+		return "", err
+	}
+	if img, err = alignMediaTypes(img, manifestMT, configMT); err != nil {
 		return "", err
 	}
 	size, err := imageSize(img)
