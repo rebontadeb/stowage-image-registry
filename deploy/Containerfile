@@ -1,0 +1,24 @@
+# Build from the repository root:  podman build -f deploy/Containerfile -t registry-ui:latest .
+
+FROM registry.access.redhat.com/hi/nodejs:latest AS ui
+WORKDIR /app
+COPY web/package.json web/package-lock.json ./
+RUN npm ci --silent
+COPY web/ ./
+RUN npm run build
+
+FROM registry.access.redhat.com/hi/go:latest AS build
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+COPY --from=ui /app/dist web/dist
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/server ./cmd/server
+
+FROM registry.access.redhat.com/hi/static:latest
+COPY --from=build /out/server /server
+USER 65532
+EXPOSE 8080
+ENTRYPOINT ["/server"]
+# Kubernetes by default; state lives in /data (mount a volume there).
+CMD ["-runtime", "kubernetes", "-listen", ":8080", "-data-dir", "/data"]

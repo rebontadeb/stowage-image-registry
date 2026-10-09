@@ -1,0 +1,48 @@
+# Stowage as a podman Quadlet (rootless, systemd --user).
+#
+# Install:
+#   podman build -f deploy/Containerfile -t localhost/registry-ui:latest .
+#   systemctl --user enable --now podman.socket
+#   printf '%s' 'a-long-admin-password-here' | podman secret create registry-ui-admin -
+#   install -D deploy/podman/registry-ui.container ~/.config/containers/systemd/registry-ui.container
+#   systemctl --user daemon-reload && systemctl --user start registry-ui
+#   loginctl enable-linger "$USER"      # keep it running when you are logged out
+#
+# Then open http://127.0.0.1:18080 and sign in as "admin".
+#
+# Why these settings:
+#  * Network=host      tenant registries publish ports on the host; the manager reaches them on 127.0.0.1.
+#  * UserNS=keep-id    the container runs as your own uid, the only user allowed to use your podman socket.
+#  * SecurityLabelDisable   SELinux otherwise blocks a container from using the host's podman socket.
+#  * identical host and container path for the data dir: registry containers bind-mount files from it
+#    by *host* path, so the manager must write them at that same path.
+
+[Unit]
+Description=Stowage (UI and API)
+Wants=podman.socket
+After=podman.socket
+
+[Container]
+Image=localhost/registry-ui:latest
+ContainerName=registry-ui
+Network=host
+UserNS=keep-id
+User=%U
+Group=%G
+SecurityLabelDisable=true
+Volume=%t/podman/podman.sock:/run/podman/podman.sock
+Volume=%h/.local/share/registry-ui:%h/.local/share/registry-ui
+Secret=registry-ui-admin,type=env,target=REGISTRY_UI_ADMIN_PASSWORD
+# Optional: encrypt signing keys under a master key you manage (else a master.key file is created in the data dir):
+#   head -c32 /dev/urandom | base64 | podman secret create registry-ui-master -
+# Secret=registry-ui-master,type=env,target=REGISTRY_UI_MASTER_KEY
+Exec=-runtime podman -podman-socket /run/podman/podman.sock -listen 127.0.0.1:18080 -data-dir %h/.local/share/registry-ui
+# Behind a reverse proxy add: -trust-proxy
+# Single sign-on: add the -oidc-* flags and Secret=registry-ui-oidc,type=env,target=REGISTRY_UI_OIDC_CLIENT_SECRET
+
+[Service]
+Restart=always
+TimeoutStartSec=300
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,115 @@
+Get started
+
+Distribution is the reference implementation of the OCI Distribution Specification for storing and distributing container images and artifacts. It provides a robust, production-grade registry server with pluggable storage backends, webhook notifications, and content trust integration.
+:latest
+Updated 15 hours ago
+26 MB
+CIS hardened
+Usage
+Basic Usage
+
+Start a registry and publish its HTTP port:
+
+podman run --detach --name registry \
+  --publish 5000:5000 \
+  registry.access.redhat.com/hi/distribution:latest
+
+Verify the registry is running by querying the API base endpoint:
+
+curl http://localhost:5000/v2/
+
+A successful response returns {} with an HTTP 200 status.
+Pushing and Pulling Images
+
+Tag a local image for the registry and push it. The --tls-verify=false flag is required because the default configuration serves plain HTTP:
+
+podman tag myapp:latest localhost:5000/myapp:latest
+podman push --tls-verify=false localhost:5000/myapp:latest
+
+Pull the image back from the registry:
+
+podman pull --tls-verify=false localhost:5000/myapp:latest
+
+Ports
+
+The registry listens on port 5000 for HTTP/HTTPS traffic.
+Persistence
+
+The image declares /var/lib/registry as its data volume. Mount a volume there to retain stored images across container replacement:
+
+podman volume create registry-data
+podman run --detach --name registry \
+  --volume registry-data:/var/lib/registry:z \
+  --publish 5000:5000 \
+  registry.access.redhat.com/hi/distribution:latest
+
+Configuration
+
+The registry reads its configuration from /etc/distribution/config.yml. The default configuration uses filesystem storage at /var/lib/registry, listens on port 5000, enables manifest deletion, and drains connections gracefully on shutdown.
+
+Mount a custom configuration file over the default path:
+
+podman run --detach --name registry \
+  --volume ./config.yml:/etc/distribution/config.yml:ro,z \
+  --publish 5000:5000 \
+  registry.access.redhat.com/hi/distribution:latest
+
+Alternatively, mount it at any path and pass the path as an argument:
+
+podman run --detach --name registry \
+  --volume ./config.yml:/custom/config.yml:ro,z \
+  --publish 5000:5000 \
+  registry.access.redhat.com/hi/distribution:latest \
+  serve /custom/config.yml
+
+Individual settings can also be overridden using REGISTRY_ environment variables. The variable name maps to the YAML path with underscores as separators. For example, to change the listen address:
+
+podman run --detach --name registry \
+  -e REGISTRY_HTTP_ADDR=:5001 \
+  --publish 5001:5001 \
+  registry.access.redhat.com/hi/distribution:latest
+
+See the Distribution configuration documentation for available settings.
+TLS
+
+To enable HTTPS, provide a certificate and key via environment variables. When TLS is enabled, the registry rejects plaintext HTTP connections:
+
+podman run --detach --name registry \
+  --volume ./certs:/certs:ro,z \
+  -e REGISTRY_HTTP_TLS_CERTIFICATE=/certs/fullchain.pem \
+  -e REGISTRY_HTTP_TLS_KEY=/certs/privkey.pem \
+  --publish 5000:5000 \
+  registry.access.redhat.com/hi/distribution:latest
+
+Authentication
+
+The registry supports htpasswd-based authentication. The builder variant includes httpd-tools, which provides the htpasswd utility for generating password files.
+
+Generate a password file using the builder variant and mount it into the default variant:
+
+mkdir -p auth
+podman run --rm --entrypoint /usr/bin/htpasswd \
+  registry.access.redhat.com/hi/distribution:latest-builder \
+  -Bbn myuser mypassword > auth/htpasswd
+
+podman run --detach --name registry \
+  --volume ./auth:/auth:ro,z \
+  -e REGISTRY_AUTH=htpasswd \
+  -e "REGISTRY_AUTH_HTPASSWD_REALM=Registry Realm" \
+  -e REGISTRY_AUTH_HTPASSWD_PATH=/auth/htpasswd \
+  --publish 5000:5000 \
+  registry.access.redhat.com/hi/distribution:latest
+
+Log in before pushing or pulling:
+
+podman login --tls-verify=false localhost:5000
+
+Garbage Collection
+
+Deleted image manifests leave orphaned blobs on disk. Run garbage collection to reclaim storage. The default configuration enables manifest deletion (storage.delete.enabled: true); custom configurations must also enable it. Stop the registry first, then run:
+
+podman run --rm \
+  --volume registry-data:/var/lib/registry:z \
+  registry.access.redhat.com/hi/distribution:latest \
+  garbage-collect /etc/distribution/config.yml
+

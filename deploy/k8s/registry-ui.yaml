@@ -1,0 +1,183 @@
+# Stowage: backend + UI, managing registries in its own namespace.
+# Apply with:  kubectl apply -f deploy/k8s/registry-ui.yaml   (oc apply on OpenShift)
+# Set the image below to where you pushed it. Registries get their own Deployment, Service and PVC.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: registry-ui
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: registry-ui
+  namespace: registry-ui
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: registry-ui
+  namespace: registry-ui
+rules:
+  - apiGroups: [""]
+    resources: [secrets, persistentvolumeclaims, services]
+    verbs: [get, list, create, update, delete]
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list]
+  - apiGroups: [""]
+    resources: [pods/log]
+    verbs: [get]
+  - apiGroups: [apps]
+    resources: [deployments]
+    verbs: [get, list, create, update, patch, delete]
+  - apiGroups: [batch]
+    resources: [jobs]
+    verbs: [get, list, create, delete]
+  # Only needed with -k8s-expose=ingress / route:
+  - apiGroups: [networking.k8s.io]
+    resources: [ingresses]
+    verbs: [get, create, delete]
+  - apiGroups: [route.openshift.io]
+    resources: [routes, routes/custom-host]
+    verbs: [get, create, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: registry-ui
+  namespace: registry-ui
+subjects:
+  - kind: ServiceAccount
+    name: registry-ui
+    namespace: registry-ui
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: registry-ui
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: registry-ui-data
+  namespace: registry-ui
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 1Gi
+---
+# First-run administrator. Create it before applying, e.g.:
+#   kubectl -n registry-ui create secret generic registry-ui-auth \
+#     --from-literal=admin-password="$(openssl rand -base64 24)" \
+#     --from-literal=oidc-client-secret="<only when using SSO>" \
+#     --from-literal=master-key="$(openssl rand -base64 32)"   # encrypts signing keys; keep it with your backups
+# Without admin-password a random one is generated and printed once in the pod log.
+# The password must be 12-72 characters and must not contain the username.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: registry-ui
+  namespace: registry-ui
+spec:
+  replicas: 1 # SQLite on a ReadWriteOnce volume: single replica only
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: registry-ui
+  template:
+    metadata:
+      labels:
+        app: registry-ui
+    spec:
+      serviceAccountName: registry-ui
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: registry-ui
+          image: registry-ui:latest # <-- set to your pushed image
+          imagePullPolicy: IfNotPresent
+          args:
+            - -runtime=kubernetes
+            - -listen=:8080
+            - -data-dir=/data
+            # - -k8s-expose=route            # OpenShift: give each registry a Route
+            # - -k8s-domain=apps.example.com # registries become <name>.apps.example.com
+            # - -k8s-storage-class=fast
+            # Single sign-on (any OIDC provider). Role comes from the groups claim at every sign-in:
+            # - -oidc-issuer=https://sso.example.com/realms/corp
+            # - -oidc-client-id=stowage
+            # - -oidc-redirect-url=https://registry-ui.apps.example.com/api/auth/oidc/callback
+            # - -oidc-name=Corp SSO
+            # - -oidc-admin-groups=registry-admins
+            # - -oidc-operator-groups=registry-operators
+            # - -oidc-viewer-groups=registry-viewers
+            # - -trust-proxy          # behind your ingress/router: take client IPs from X-Forwarded-For
+            # - -disable-local-login  # SSO only (keep one local admin until SSO is proven)
+          env:
+            - name: REGISTRY_UI_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: registry-ui-auth, key: admin-password, optional: true }
+            - name: REGISTRY_UI_MASTER_KEY
+              valueFrom:
+                secretKeyRef: { name: registry-ui-auth, key: master-key, optional: true }
+            - name: REGISTRY_UI_OIDC_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef: { name: registry-ui-auth, key: oidc-client-secret, optional: true }
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /api/healthz
+              port: http
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: registry-ui-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: registry-ui
+  namespace: registry-ui
+spec:
+  selector:
+    app: registry-ui
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+---
+# Optional, enables storage-usage numbers (kubelet stats need nodes/proxy). Without it the UI shows "—".
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: registry-ui-node-stats
+rules:
+  - apiGroups: [""]
+    resources: [nodes/proxy]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: registry-ui-node-stats
+subjects:
+  - kind: ServiceAccount
+    name: registry-ui
+    namespace: registry-ui
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: registry-ui-node-stats
