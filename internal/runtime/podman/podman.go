@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/rdeb/local-image-registry/internal/runtime"
@@ -136,9 +137,63 @@ func mountSpecs(m []mountRec) []map[string]any {
 	return out
 }
 
+// pullMu serialises image pulls, so two first-time requests for the same image do not download it twice.
+var pullMu sync.Mutex
+
+// ensureImage makes sure ref is in local storage. The libpod create call does not pull by itself: on a machine
+// that has never used the image it answers "not found", which would otherwise surface as a missing registry.
+func (d *Driver) ensureImage(ctx context.Context, ref string) error {
+	exists := func() (bool, error) {
+		code, out, err := d.do(ctx, "GET", "/images/"+ref+"/exists", nil, nil)
+		switch {
+		case err != nil:
+			return false, err
+		case code == http.StatusNoContent || code == http.StatusOK:
+			return true, nil
+		case code == http.StatusNotFound:
+			return false, nil
+		}
+		return false, fmt.Errorf("podman: checking image %s: %d: %s", ref, code, bytes.TrimSpace(out))
+	}
+	if ok, err := exists(); ok || err != nil {
+		return err
+	}
+	pullMu.Lock()
+	defer pullMu.Unlock()
+	if ok, err := exists(); ok || err != nil { // pulled by someone else while we waited
+		return err
+	}
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Minute)
+	defer cancel()
+	code, out, err := d.do(ctx, "POST", "/images/pull", url.Values{"reference": {ref}, "quiet": {"true"}}, nil)
+	if err != nil {
+		return fmt.Errorf("%w: pulling %s: %v", runtime.ErrImage, ref, err)
+	}
+	if code != http.StatusOK {
+		return fmt.Errorf("%w: pulling %s failed (%d): %s", runtime.ErrImage, ref, code, firstLine(bytes.TrimSpace(out)))
+	}
+	// The body is a stream of JSON objects; a failed pull still answers 200 and reports the reason in "error".
+	dec := json.NewDecoder(bytes.NewReader(out))
+	for dec.More() {
+		var ev struct {
+			Error string `json:"error"`
+		}
+		if dec.Decode(&ev) != nil {
+			break
+		}
+		if ev.Error != "" {
+			return fmt.Errorf("%w: pulling %s failed: %s", runtime.ErrImage, ref, firstLine([]byte(ev.Error)))
+		}
+	}
+	return nil
+}
+
 func (d *Driver) Create(ctx context.Context, s runtime.Spec) error {
 	if s.Image == "" {
 		s.Image = runtime.DefaultImage
+	}
+	if err := d.ensureImage(ctx, s.Image); err != nil {
+		return err
 	}
 	filesDir := filepath.Join(d.stateDir, s.Name, "files")
 	// Drop files from a previous generation (e.g. a removed TLS key) before writing the new set.
@@ -361,6 +416,9 @@ func (d *Driver) RunTool(ctx context.Context, t runtime.ToolSpec) (runtime.ToolR
 	_, _ = rand.Read(idb)
 	name := "regui-tool-" + hex.EncodeToString(idb)
 
+	if err := d.ensureImage(ctx, t.Image); err != nil {
+		return runtime.ToolResult{}, err
+	}
 	var vols []map[string]any
 	for _, v := range t.Volumes {
 		vn := "regui-" + v.Name
@@ -430,3 +488,14 @@ func (d *Driver) RunTool(ctx context.Context, t runtime.ToolSpec) (runtime.ToolR
 }
 
 var _ runtime.Driver = (*Driver)(nil)
+
+func firstLine(b []byte) string {
+	s := string(b)
+	if i := bytes.IndexByte(b, '\n'); i >= 0 {
+		s = string(b[:i])
+	}
+	if len(s) > 300 {
+		s = s[:300] + "…"
+	}
+	return s
+}

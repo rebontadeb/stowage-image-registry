@@ -102,8 +102,8 @@ outside the project on purpose.
 
 ### Images that are pulled on first use
 
-Stowage runs helper tools as short-lived containers. Podman pulls them the first time a feature needs them, so the
-first scan or fix is slower. All are public:
+Stowage downloads these itself the first time a feature needs them (it does not rely on you having pulled them), so the
+first registry, scan or fix on a new machine is slower. All are public:
 
 | Feature | Image |
 |---|---|
@@ -341,6 +341,8 @@ rm -rf ~/.local/share/registry-ui
 | Symptom | Cause and fix |
 |---|---|
 | `make podman-image` fails pulling `registry.access.redhat.com/hi/...` | No route to the registry, or a corporate proxy. Test `podman pull registry.access.redhat.com/hi/go:latest`; mirror the images and adjust the `FROM` lines in `deploy/Containerfile`. |
+| The very first "New registry" takes a while | Stowage downloads the `distribution` image (about 85 MB) on first use. Later registries are instant. Pull it ahead with `podman pull registry.access.redhat.com/hi/distribution:latest`. |
+| "container image unavailable: pulling ... failed" | The machine cannot download that image: check internet or proxy access to the registry named in the message, or `podman login` for a private one, then try again. |
 | UI loads but "Create registry" fails with a connection error | The podman socket is not reachable: `systemctl --user enable --now podman.socket`, and check the `-v ...podman.sock` mount path. |
 | `permission denied` on the podman socket from the container | Missing `--userns keep-id --user "$(id -u):$(id -g)"` or `--security-opt label=disable` (SELinux). |
 | Registry shows "starting" forever, or its config file is missing | The data directory is not mounted at the same path inside and outside the container. |

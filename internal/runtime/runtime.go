@@ -12,6 +12,8 @@ const DefaultImage = "registry.access.redhat.com/hi/distribution:latest"
 
 var (
 	ErrNotFound = errors.New("registry instance not found")
+	// ErrImage means a container image could not be found or downloaded; the message says which and why.
+	ErrImage = errors.New("container image unavailable")
 	// ErrUnsupported means the runtime cannot provide this information (e.g. volume usage on a
 	// cluster that denies access to kubelet stats).
 	ErrUnsupported = errors.New("not supported by this runtime")

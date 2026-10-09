@@ -280,6 +280,8 @@ func respond(w http.ResponseWriter, ok int, v any, err error) {
 			code = 409
 		case errors.Is(err, service.ErrInvalid), errors.Is(err, auth.ErrInvalid):
 			code = 400
+		case errors.Is(err, runtime.ErrImage):
+			code = 502 // the registry or tool image could not be downloaded: the message says which and why
 		case errors.Is(err, service.ErrNoPorts):
 			code = 507
 		case errors.Is(err, runtime.ErrUnsupported), errors.Is(err, service.ErrSecurityDisabled):
