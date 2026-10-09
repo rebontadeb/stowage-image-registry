@@ -120,13 +120,25 @@ first registry, scan or fix on a new machine is slower. All are public:
 Each can be changed with a `-tool-*-image` flag (below), for example to point at an internal mirror. To warm the
 cache on a machine that will go offline, `podman pull` the ones you use.
 
+## What is in the UI
+
+* **Dashboard**: fleet status (running, stopped, HTTPS), storage used, and vulnerability totals across registries.
+* **Registries**: one card per tenant. Open one for its tabs:
+  * **Overview**: *Status* (address, transport, storage, image, created) next to *Contents* (repositories, image tags,
+    scanned images, vulnerability counts, signatures, signing and trusted keys), then the *Connect* commands.
+  * **Images**: repositories and tags; scan, sign, fix, rebase, copy the image name, add images.
+  * **Registry users**, **TLS**, **Security** (signing and trusted keys), **Configuration**, **Access** (which Stowage
+    accounts may see it), and **Delete registry** (admins; type the name to confirm).
+* **Audit log**, **Accounts & access**, **Security tools** (admins).
+* Light and dark themes, a collapsible navigation, and a layout for phones (see [Navigation and mobile](#navigation-and-mobile)).
+
 ## Who can do what
 
 | Role | Registries | Capabilities |
 |---|---|---|
-| **admin** | all | everything: create/delete registries, Stowage accounts, audit log |
-| **operator** | those in scope | start/stop, delete images, run GC, registry users, TLS, configuration |
-| **viewer** | those in scope | read-only: status, images, registry users |
+| **admin** | all | everything: create/delete registries, Stowage accounts, audit log, security tools, signing keys |
+| **operator** | those in scope | start/stop, add/delete/scan/sign/**fix**/**rebase** images, run GC, registry users, TLS, configuration |
+| **viewer** | those in scope | read-only: status, contents, scan results, images, registry users |
 
 *Scope* is per account: every registry, or an explicit list. Registries outside an account's scope
 look nonexistent (404, never 403). Deleting a registry revokes all access to it, so a new registry
@@ -180,10 +192,21 @@ registry client library does by default; use a hostname with TLS for anything se
 
 ## Repositories and images
 
-The **Images** tab lists a registry's repositories (name, tag count, worst vulnerability counts); open one for its tags,
-each with vulnerability and signature status, a *Details* dialog and an actions menu (scan again, sign, delete tag).
-Operators can delete a single tag, or **delete a whole repository** (the name must be typed to confirm). Free disk space
-from the list's *More actions* menu.
+The **Images** tab lists a registry's repositories (name, tag count, worst vulnerability counts); open one for its tags.
+Each tag row shows its vulnerability and signature status and these buttons, left to right:
+
+| Button | Who | What it does |
+|---|---|---|
+| **Copy** | everyone | copies the full image name with the tag (`host:port/repo:tag`) |
+| **Details** | everyone, with security on | scan results, SBOM, signature, compliance for that image |
+| **Scan image** | operator | runs the vulnerability, SBOM and signature checks again |
+| **Sign image** | operator, once a signing key exists | signs the exact image with the registry's key |
+| **Fix** | operator, after a scan with findings | patches OS packages into a new `-fixed` tag (see below) |
+| **Rebase** | operator | moves the image onto a newer base as a new `-rebased` tag (see below) |
+| **Delete tag** | operator | removes the image, its signature and its stored scan results |
+
+Operators can also **delete a whole repository** (the name must be typed to confirm) and free disk space from the
+list's *More actions* menu.
 
 Distribution has no repository-level delete and keeps listing an empty repository, so Stowage deletes every tag's manifest
 (and signature index) and hides repositories that have no tags. Space is returned by garbage collection, which Stowage runs
@@ -194,7 +217,7 @@ collected as well; give such images a tag.
 ## Image security: scans, SBOMs, signatures, Red Hat OVAL
 
 Each registry's **Images** tab shows, per tag, its vulnerabilities (critical · high · medium · low) and
-signature status, with a details dialog. Scans run on demand (operators click *Scan*), are cached per
+signature status, with a details dialog. Scans run on demand (operators click *Scan image*), are cached per
 image **digest**, and are removed with the image. The dashboard and registry list roll the numbers up.
 
 | Check | Tool image | What you get |
@@ -223,42 +246,55 @@ How it is built to be safe:
   access, or a mirror). Results show the database build date; run the scan again to pick up newer data.
 * Signature tags that cosign adds next to an image are hidden in the tag list and deleted together with the image.
 
-**Fix.** After a vulnerability scan, an operator can press **Fix** on a tag. Stowage unpacks the image, runs
-`microdnf upgrade` from `ubi<major>/ubi-minimal` against the unpacked root (`--installroot`), packs what changed into one
-new layer, and pushes the result as `<tag>-fixed`. The original is never touched and the new image is scanned when it is
-ready. If the scan names RPM packages with a fixed version only those are upgraded, otherwise every package with an
-update is. Limits, stated plainly:
-* Only **RHEL-based images (RHEL, UBI, via `microdnf`)**, **Alpine images (via `apk`)** and **Debian/Ubuntu images
-  (via the image's own `apt`, run in a chroot of the unpacked image)** are patched, and only their **OS packages**,
-  from the repositories the image was built for. A language runtime that the image builds or copies in (for example
-  the Python interpreter of a `python:3.x` image, or nginx itself) is not an OS package: update it by **Rebase**
-  onto a newer image, or rebuild from your Dockerfile.
-* File owners in the fix layer are flattened to root (rootless users cannot read other owners), modes are kept. Application dependencies (npm,
-  pip, Go modules) and distroless images are not touched.
-* Fixing works only as far as the Red Hat repositories have newer builds, and scanners mark many Red Hat advisories as
-  "not fixed". Compare the new scan with the old one: the counts may not drop.
-* Needs internet access to the UBI repositories, and is **podman-only** (it bind-mounts the unpacked image, like OVAL).
-* Files in the new layer are owned by root, and layer content is the diff of file size/time/mode, so unchanged files are
-  not repeated.
+**Fix.** After a vulnerability scan, an operator can press **Fix** on a tag. Stowage unpacks the image, upgrades its
+operating-system packages inside the unpacked copy, packs what changed into one new layer, and pushes the result as
+`<tag>-fixed`. The original is never touched, and the new image is scanned when it is ready so you can compare the two.
+If the scan names packages with a fixed version only those are upgraded; otherwise every package that has an update is.
+
+| Image family | Package manager used | Helper image |
+|---|---|---|
+| RHEL, UBI | `microdnf --installroot` | `ubi<major>/ubi-minimal` |
+| Alpine | `apk --root`, with the image's own repositories | `alpine:<release>` |
+| Debian, Ubuntu | the image's own `apt`, in a chroot of the unpacked image | `ubi9/ubi-minimal` (shell and `chroot` only) |
+
+Limits, stated plainly:
+
+* Only **OS packages** are patched, from the repositories the image was built for. Application dependencies (npm, pip,
+  Go modules), a language runtime built or copied into the image (the Python of a `python:3.x` image, nginx itself),
+  and distroless images are not touched. For those, use **Rebase** or rebuild from your Dockerfile.
+* Many advisories are marked "not fixed" by scanners, and an end-of-life distribution release gets no new packages.
+  Compare the new scan with the old one: the counts may drop a lot (a Debian Python image went from 503 to 214
+  findings) or not at all (Alpine 3.14).
+* The machine needs internet access to the distribution's package repositories.
+* **Podman only**: the unpacked image is bind-mounted into a helper container, like the OVAL check.
+* File owners in the new layer are flattened to root (rootless users cannot read other owners); modes, including
+  setuid bits, are kept. Unchanged files are not repeated in the layer.
 
 **Rebase.** The real fix for findings that have no patch (an end-of-life base such as Alpine 3.14 or OpenSSL 1.1) is a
-newer base. **Rebase** on a tag takes the base the image was built on (the `FROM` line) and a newer one, and pushes
-`<tag>-rebased` whose own layers sit on the new base. Layers are matched by uncompressed content, so an image that a
-registry or `podman push` recompressed still matches. The original is untouched, the image's user, command and
-environment are kept, and the new image is scanned. Stowage refuses if the image does not start with the old base's
-layers. It does not rebuild anything: your application layers are copied as they are, so test that the new image
-still starts. Variables set by the old base (for example `NGINX_VERSION`) keep their old values. Rebase is **not for language-runtime images**: layers from `pip install` or `npm install` are tied to the old
-runtime version (`python3.9/site-packages`) and the container will not start on a newer one. Rebuild those from
-their Dockerfile. Needs access to the
-base images' registries, works on podman and Kubernetes, and is not limited to one distribution.
+newer base. **Rebase** takes the base the image was built on and a newer one, and pushes `<tag>-rebased` whose own
+layers sit on the new base. The original is untouched, the image's user, command and environment are kept, and the new
+image is scanned.
+
+In the dialog, give the new base and **either** the old base (the `FROM` line of the Dockerfile; **Check** tells you
+whether the image really starts with its layers) **or** the number of leading layers that belong to the base. Use the
+layer count when the old base's tag has been rebuilt since the image was made, which is common: layers are compared by
+content, so a moved tag no longer matches. The dialog's *How this image was built* list shows which layers are which.
+
+* Rebase copies your layers as they are, it does not rebuild anything: test that the new image still starts.
+  Variables set by the old base (for example `NGINX_VERSION`) keep their old values.
+* It is **not for language-runtime images**: layers from `pip install` or `npm install` are tied to the old runtime
+  version (`python3.9/site-packages`) and the container will not start on a newer one. Rebuild those from their Dockerfile.
+* It suits images that add files or configuration to an OS or server base, such as nginx.
+* Needs access to the base images' registries. It uses only the registry API, so it is not tied to podman, but it has
+  not been run on Kubernetes.
 
 Flags: `-import-max-gib` sets the Add image size limit, `-security=false` turns the checks off, `-scan-workers`, `-tool-{syft,grype,cosign,openscap}-image` to pin images, `-tool-fix-debian-image` (shell + chroot helper, default ubi-minimal), `-tool-fix-alpine-image` (default `docker.io/library/alpine:%s`) and `-tool-fix-image` (default `registry.access.redhat.com/ubi%s/ubi-minimal:latest`, `%s` = RHEL major) for Fix.
 
 ## Audit log
 
 Every state-changing call is recorded (also denied ones): who, role, action, target, outcome, client IP and
-safe details (never passwords, keys or env values, only env variable *names*). Filter and page in the UI,
-or export CSV (formula-injection safe). Retention: `-audit-retention-days` (default 365).
+safe details (never passwords, keys or env values, only env variable *names*). Filter in the UI (actor, action, target, outcome, time range), page through it
+(10, 25, 50 or 100 rows per page; the wide table scrolls sideways), or export CSV (formula-injection safe). Retention: `-audit-retention-days` (default 365).
 
 ## Kubernetes / OpenShift
 
